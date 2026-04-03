@@ -1,0 +1,211 @@
+---
+# deploy.yml — Deploy capstone lab to a remote server
+#
+# Usage:
+#   cd deploy/
+#   ansible-playbook -i inventory.ini deploy.yml
+#
+# What it does:
+#   1. Installs QEMU, cross-compiler, build tools on the remote server
+#   2. Copies the capstone-student repo
+#   3. Copies large assets (QCOW2, Image, kernel headers)
+#   4. Builds the project (make)
+#   5. Smoke-tests with make test
+#
+# Prerequisites (local):
+#   - capstone-student/ repo built (make)
+#   - Assets in place: target/capstone-target.qcow2, target/Image, kernel/linux-6.6/
+
+- name: Deploy capstone lab
+  hosts: capstone
+  gather_facts: true
+
+  vars:
+    lab_root: /root/capstone
+    local_project: "{{ playbook_dir }}/.."
+    local_lab: "{{ playbook_dir }}/../../aarch64-linux-qemu-lab"
+    qcow2_src: "{{ local_lab }}/../capstone-spr-2026/target-package/capstone-target.qcow2"
+    image_src: "{{ local_lab }}/linux-6.6/arch/arm64/boot/Image"
+    kernel_src: "{{ local_lab }}/linux-6.6"
+
+  tasks:
+    # ── 1. Install packages ──────────────────────────────────────────────────
+
+    - name: Install QEMU and build tools
+      apt:
+        name:
+          - qemu-system-arm
+          - qemu-utils
+          - gcc-aarch64-linux-gnu
+          - binutils-aarch64-linux-gnu
+          - make
+          - bc
+          - flex
+          - bison
+          - libssl-dev
+          - libelf-dev
+          - python3
+          - git
+          - rsync
+        state: present
+        update_cache: true
+      register: apt_result
+      retries: 3
+      delay: 5
+      until: apt_result is success
+
+    # ── 2. Create lab directory ──────────────────────────────────────────────
+
+    - name: Create lab directory
+      file:
+        path: "{{ lab_root }}"
+        state: directory
+        mode: "0755"
+
+    # ── 3. Sync capstone-student repo ────────────────────────────────────────
+
+    - name: Sync project files (excluding large assets and build artifacts)
+      synchronize:
+        src: "{{ local_project }}/"
+        dest: "{{ lab_root }}/"
+        delete: false
+        rsync_opts:
+          - "--exclude=.git"
+          - "--exclude=shared/"
+          - "--exclude=target/*.qcow2"
+          - "--exclude=target/Image"
+          - "--exclude=kernel/linux-6.6"
+          - "--exclude=lkm/*.ko"
+          - "--exclude=lkm/*.o"
+          - "--exclude=lkm/*.mod*"
+          - "--exclude=lkm/Module*"
+          - "--exclude=lkm/modules*"
+          - "--exclude=lkm/.*.cmd"
+          - "--exclude=lkm/src/*.o"
+          - "--exclude=lkm/src/.*.cmd"
+          - "--exclude=tools/mykill"
+          - "--exclude=tools/rkcmd"
+          - "--exclude=deploy/"
+          - "--exclude=wireguard/keys/"
+          - "--exclude=wireguard/server/"
+          - "--exclude=wireguard/clients/"
+          - "--exclude=wireguard/server_private.key"
+          - "--exclude=wireguard/server_public.key"
+
+    # ── 4. Copy large assets ─────────────────────────────────────────────────
+
+    - name: Create target directory
+      file:
+        path: "{{ lab_root }}/target"
+        state: directory
+
+    - name: Check if QCOW2 already exists on remote
+      stat:
+        path: "{{ lab_root }}/target/capstone-target.qcow2"
+      register: remote_qcow2
+
+    - name: Copy QCOW2 image (this takes a while — ~285MB)
+      copy:
+        src: "{{ qcow2_src }}"
+        dest: "{{ lab_root }}/target/capstone-target.qcow2"
+        mode: "0644"
+      when: not remote_qcow2.stat.exists
+
+    - name: Check if Image already exists on remote
+      stat:
+        path: "{{ lab_root }}/target/Image"
+      register: remote_image
+
+    - name: Copy kernel Image (~50MB)
+      copy:
+        src: "{{ image_src }}"
+        dest: "{{ lab_root }}/target/Image"
+        mode: "0644"
+      when: not remote_image.stat.exists
+
+    # ── 5. Sync kernel headers ───────────────────────────────────────────────
+
+    - name: Create kernel headers directory
+      file:
+        path: "{{ lab_root }}/kernel/linux-6.6"
+        state: directory
+
+    - name: Sync kernel headers (only what's needed for module builds)
+      synchronize:
+        src: "{{ kernel_src }}/"
+        dest: "{{ lab_root }}/kernel/linux-6.6/"
+        delete: false
+        rsync_opts:
+          - "--include=Makefile"
+          - "--include=Module.symvers"
+          - "--include=.config"
+          - "--include=scripts/***"
+          - "--include=include/***"
+          - "--include=arch/arm64/include/***"
+          - "--include=arch/arm64/Makefile"
+          - "--include=arch/Kconfig"
+          - "--include=tools/***"
+          - "--include=*/"
+          - "--exclude=*.o"
+          - "--exclude=*.ko"
+          - "--exclude=*.cmd"
+          - "--exclude=vmlinux"
+          - "--exclude=System.map"
+          - "--exclude=arch/arm64/boot/Image"
+          - "--exclude=drivers/***"
+          - "--exclude=sound/***"
+          - "--exclude=fs/***"
+          - "--exclude=net/***"
+          - "--exclude=Documentation/***"
+
+    # ── 6. Build ─────────────────────────────────────────────────────────────
+
+    - name: Build project (make)
+      command: make
+      args:
+        chdir: "{{ lab_root }}"
+      register: build_result
+      changed_when: "'Leaving directory' in build_result.stdout"
+
+    - name: Show build result
+      debug:
+        msg: "{{ build_result.stdout_lines[-5:] }}"
+
+    # ── 7. Verify artifacts ──────────────────────────────────────────────────
+
+    - name: Check rootkit.ko built
+      stat:
+        path: "{{ lab_root }}/lkm/rootkit.ko"
+      register: rootkit_ko
+
+    - name: Check mykill built
+      stat:
+        path: "{{ lab_root }}/tools/mykill"
+      register: mykill_bin
+
+    - name: Report build status
+      debug:
+        msg: >
+          rootkit.ko: {{ 'OK' if rootkit_ko.stat.exists else 'MISSING' }}
+          ({{ rootkit_ko.stat.size | default(0) }} bytes),
+          mykill: {{ 'OK' if mykill_bin.stat.exists else 'MISSING' }}
+
+    # ── 8. Smoke test (make test) ────────────────────────────────────────────
+
+    - name: Run make test (boots VM, runs tests, powers off)
+      command: make test
+      args:
+        chdir: "{{ lab_root }}"
+      register: test_result
+      timeout: 300
+      ignore_errors: true
+
+    - name: Show test results
+      debug:
+        msg: "{{ test_result.stdout_lines[-20:] }}"
+
+    - name: Show test summary
+      debug:
+        msg: >
+          Test exit code: {{ test_result.rc }}
+          (expected: 1 — stubs fail insmod, challenges skip)

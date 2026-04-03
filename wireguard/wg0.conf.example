@@ -1,0 +1,26 @@
+# WireGuard config for COLDSPARK operations
+#
+# Your instructor will provide you with a group-specific config file
+# (group-NN.conf) containing your private key. Replace this file with it:
+#
+#   sudo cp group-NN.conf /etc/wireguard/wg0.conf
+#   sudo wg-quick up wg0
+#
+# Network:
+#   10.10.10.1   — MERIDIAN target (server)
+#   10.10.10.X   — Your attack host (assigned per group)
+#
+# After connecting:
+#   nc 10.10.10.1 1337    — MERIDIAN secure terminal
+#   ping 10.10.10.1       — verify connectivity
+
+[Interface]
+Address = 10.10.10.X/32
+PrivateKey = <YOUR_PRIVATE_KEY>
+
+[Peer]
+PublicKey = <SERVER_PUBLIC_KEY>
+PresharedKey = <YOUR_PRESHARED_KEY>
+AllowedIPs = 10.10.10.0/24
+Endpoint = <SERVER_PUBLIC_IP>:51820
+PersistentKeepalive = 25

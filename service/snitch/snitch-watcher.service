@@ -1,0 +1,12 @@
+[Unit]
+Description=SNITCH File Integrity Monitor
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/snitch_watcher
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
