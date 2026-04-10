@@ -1,0 +1,35 @@
+MERIDIAN DEFENSE GROUP — INTELLIGENCE REPORT
+Report ID:      MDG-2024-0419
+Classification: UNCLASSIFIED
+Date:           19 April 2024
+Author:         Threat Analysis Center
+
+Threat Assessment — APT Activity Q1
+
+EXECUTIVE SUMMARY
+
+Quarterly review of Advanced Persistent Threat (APT) activity
+targeting the defense industrial base during Q1 2024, based on
+unclassified threat feeds, vendor advisories, and partner sharing.
+
+KEY FINDINGS
+
+1. Spear-phishing campaigns targeting defense contractors increased
+   23% compared to Q4 2023.  Primary lure themes: budget proposals,
+   contract announcements, and conference invitations.
+
+2. Two new malware families were identified in public reporting
+   that specifically target Linux-based embedded systems.  Neither
+   has been observed in campaigns against our sector.
+
+3. Supply chain attacks against open-source software repositories
+   remained at elevated levels.  Seven confirmed compromised
+   packages were identified in public repositories during Q1.
+
+RECOMMENDATIONS
+
+- Update email filtering rules to block newly identified lure domains
+- Verify no instances of compromised packages in development environments
+- Conduct refresher training on spear-phishing identification
+
+--- END OF REPORT ---

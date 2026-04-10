@@ -200,7 +200,9 @@ submission.zip:
 	zip -r submission.zip \
 		lkm/src/ lkm/Makefile \
 		exploit/ loader/ shellcode/ \
-		Makefile config.mk
+		writeup/ \
+		Makefile config.mk \
+		--exclude '*.gitkeep'
 
 .PHONY: all lkm exploit loader shellcode tools clean deploy \
 	run run-persist target target-persist \

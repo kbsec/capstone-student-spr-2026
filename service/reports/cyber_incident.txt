@@ -1,0 +1,35 @@
+MERIDIAN DEFENSE GROUP — INTELLIGENCE REPORT
+Report ID:      MDG-2024-0501
+Classification: UNCLASSIFIED
+Date:           01 May 2024
+Author:         Cyber Defense Operations
+
+Cyber Incident Report — Perimeter Probe
+
+EXECUTIVE SUMMARY
+
+On 28 April 2024, network monitoring detected a series of TCP SYN
+probes against the external perimeter of the corporate network.
+Investigation determined this was a routine internet-wide scan
+by a known security research organization.
+
+TIMELINE
+
+- 28 Apr 0314 UTC: First SYN probe detected (port 443)
+- 28 Apr 0314-0347 UTC: Sequential port scan, ports 1-1024
+- 28 Apr 0352 UTC: Scan concluded, no follow-up activity
+- 28 Apr 0800 UTC: SOC analyst confirmed source as Shodan scanner
+
+IMPACT
+
+None.  No services were exposed beyond those already documented
+in the external attack surface assessment.  All probed ports
+returned expected responses (RST or no response).
+
+ACTIONS TAKEN
+
+- Confirmed firewall rules are current
+- Added source IP range to watchlist for correlation
+- No changes to security posture required
+
+--- END OF REPORT ---

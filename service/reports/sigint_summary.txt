@@ -1,0 +1,35 @@
+MERIDIAN DEFENSE GROUP — INTELLIGENCE REPORT
+Report ID:      MDG-2024-0117
+Classification: UNCLASSIFIED
+Date:           17 January 2024
+Author:         Signals Analysis Division
+
+SIGINT Summary — Eastern Mediterranean
+
+EXECUTIVE SUMMARY
+
+Routine monitoring of commercial maritime communications in the
+Eastern Mediterranean basin during the period 01-15 January 2024
+identified several patterns of interest.  All intercepts occurred
+on unencrypted commercial frequencies and are assessed as routine
+shipping coordination traffic.
+
+KEY FINDINGS
+
+1. Commercial vessel traffic volume increased 12% compared to the
+   same period in 2023, consistent with seasonal trade patterns.
+
+2. Three previously unlogged call signs were observed on VHF
+   Channel 16.  All three were subsequently correlated with newly
+   registered cargo vessels flagged in Liberia.
+
+3. No anomalous encrypted traffic was detected on monitored
+   frequency bands during this reporting period.
+
+ASSESSMENT
+
+The observed patterns are consistent with normal commercial maritime
+operations.  No indicators of threat-related activity were identified.
+Continued monitoring is recommended at the standard collection tempo.
+
+--- END OF REPORT ---

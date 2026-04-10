@@ -1,184 +1,209 @@
-# Capstone: Kernel Rootkit + Exploitation
+# Capstone: Kernel Rootkit
 
-**Course:** Linux Kernel Security -- Spring 2026
-**Architecture:** AArch64 (ARM 64-bit) | **Kernel:** Linux 6.6 (no KASLR)
-**Points:** 200 base + up to 90 extra credit
+You're building a kernel rootkit, deploying it against a live target, and evading an IDS that's trying to catch you. Start by reading `COLDSPARK.md` for the scenario, then `capstone.md` for the technical spec.
 
-Build a fully functional Linux kernel rootkit, develop privilege escalation exploits, and write AArch64 shellcode -- all targeting a live MERIDIAN DEFENSE GROUP environment running on an AArch64 QEMU VM.
+## Quick start
 
-**Read `COLDSPARK.md` first** -- it's your targeting package and sets the mission context. Then read `capstone.md` for the full assignment specification.
+1. Download the target assets (Image + QCOW2) from **[TODO: course link]** and drop them in `target-package/`
+2. Boot the target: `cd target-package && ./start-target.sh`
+3. Connect: `nc localhost 11337`
 
----
+You should see the MERIDIAN secure terminal. Type `help`.
 
 ## Prerequisites
 
-- AArch64 cross-compiler (`aarch64-linux-gnu-gcc`)
-- QEMU (`qemu-system-aarch64`)
-- GNU Make
-- Python 3 (for `send_shellcode.py`)
-- WireGuard (for live target access)
-
----
-
-## Setup
+You need QEMU and the ARM64 cross-compiler:
 
 ```bash
-# Clone and enter the repo
-git clone <repo-url> capstone-student
-cd capstone-student
-
-# Download kernel headers (needed for building kernel modules)
-make setup-kernel
-
-# Download VM disk image and kernel
-make setup-target
+sudo apt install qemu-system-arm gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 ```
 
----
+## Building kernel headers
 
-## Build
+Your rootkit compiles against Linux 6.6.0 kernel headers. You don't need to build the full kernel, just prepare the headers (takes about a minute):
 
 ```bash
-make            # Build all components
-make lkm        # Build rootkit.ko only
-make exploit     # Build exploit programs only
-make shellcode   # Assemble beachhead shellcode only
-make tools       # Build C2 helpers (mykill, rkcmd)
-make clean       # Remove all build artifacts
+cd kernel
+wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.tar.xz
+tar xf linux-6.6.tar.xz
+cp dot-config linux-6.6/.config
+cd linux-6.6
+make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_prepare
 ```
 
----
+If you already have `aarch64-linux-qemu-lab` set up from earlier in the course, you can skip this and point at your existing kernel build instead: `make lkm KDIR=~/teaching/aarch64-linux-qemu-lab/linux-6.6`. See `kernel/README.md` for more options.
 
-## Run (Local QEMU)
+## Build system
 
-```bash
-make deploy     # Copy built artifacts to QEMU shared folder
-make run        # Boot dev VM with shared folder (ephemeral overlay)
-make run-persist # Boot dev VM with persistent overlay
+The repo is split into subdirectories, each with its own Makefile. The top-level Makefile just calls `make -C <dir>` for each one. You write code in three places:
+
+| Directory | What you build | Top-level target | How it works |
+|-----------|---------------|-----------------|--------------|
+| `shellcode/` | Beachhead PIC payload | `make shellcode` | `as` + `objcopy` turns your `.S` into a raw `.bin` |
+| `lkm/` | Kernel rootkit module | `make lkm` | Linux kbuild compiles your `.c` files into `rootkit.ko` |
+| `exploit/` | Privesc programs | `make exploits` | `aarch64-linux-gnu-gcc` cross-compiles your `.c` into static binaries |
+
+Run `make` at the top level to build everything, or `cd` into any directory and run `make` there to build just that component.
+
+### Where to put your code
+
+**Shellcode** (`shellcode/`): Edit `beachhead.S` with your AArch64 assembly. This is the PIC payload you send to the MERIDIAN service over the network. If you need multiple shellcode files, add more `.S` files and list them in `SOURCES` in the Makefile:
+
+```makefile
+SOURCES := beachhead.S stage2.S privesc.S
 ```
 
-Inside the VM:
+Each `.S` file produces a corresponding `.bin`.
+
+**Rootkit** (`lkm/`): The starter code has four source files in `lkm/src/` with TODO stubs where your implementation goes. The Makefile already knows about all four files. If you need to add a new source file, say `lkm/src/keylogger.c`, add it to `rootkit-objs` in `lkm/Makefile`:
+
+```makefile
+rootkit-objs := src/rootkit.o \
+                src/file_hide.o \
+                src/c2.o \
+                src/inject.o \
+                src/keylogger.o
+```
+
+That's it. kbuild handles the rest. Your new file will be compiled and linked into `rootkit.ko` on the next `make lkm`.
+
+**Exploits** (`exploit/`): Each `.c` file is a standalone program. The stubs have scaffolding (ioctl wrappers, symbol lookup) but the actual exploit logic is yours to write. To add a new exploit, add a target to `exploit/Makefile`:
+
+```makefile
+TARGETS := exploit_rwx exploit_privesc exploit_modprobe my_new_exploit
+
+my_new_exploit: my_new_exploit.c
+	$(CC) $(CFLAGS) -o $@ $<
+```
+
+### Cross-compilation
+
+All Makefiles include `config.mk`, which sets `ARCH=arm64` and `CROSS_COMPILE=aarch64-linux-gnu-`. If your cross-compiler is somewhere else, override it:
 
 ```bash
+make CROSS_COMPILE=aarch64-none-elf-
+```
+
+If your kernel headers are somewhere else:
+
+```bash
+make KDIR=/path/to/linux-6.6
+```
+
+## Development workflow
+
+The cycle is: edit code on your host, cross-compile, deploy into the VM, test.
+
+```bash
+# 1. Edit your code
+vim lkm/src/file_hide.c
+
+# 2. Build
+make lkm
+
+# 3. Deploy to shared folder
+make deploy
+
+# 4. Boot target with shared folder
+cd target-package && ./start-target.sh --shared
+
+# 5. In the VM: set up environment (first time only)
 mount-shared
-cd /mnt/shared/capstone
-sudo insmod rootkit.ko
-./mykill status
+sudo bash /mnt/shared/capstone/setup_capstone.sh
+
+# 6. Load and test your rootkit
+sudo insmod /mnt/shared/capstone/rootkit.ko
+
+# 7. Unload before reloading
+sudo rmmod rootkit
 ```
 
----
+Repeat steps 1-2-3-6-7 as you iterate. You only need to run `setup_capstone.sh` once per boot.
 
-## Test
+For shellcode, there's a shortcut:
 
 ```bash
-make test               # Full automated test suite (boots fresh VM)
-
-# Or run individual test suites inside the VM:
-sudo bash test_lkm.sh           # Rootkit module tests
-sudo bash test_lkm.sh c2        # Test a specific subsystem
-sudo bash test_challenges.sh    # Driver exploit tests
-sudo bash test_chain.sh         # Full COLDSPARK attack chain
+make shellcode              # assemble beachhead.S -> beachhead.bin
+make -C shellcode send      # send beachhead.bin to the target
 ```
 
----
+## SNITCH IDS
 
-## Live Target (WireGuard)
+The target has a host IDS called SNITCH watching for exactly the kind of things your rootkit does. It has 8 detectors:
+
+- Hidden modules (periodic sysfs vs. module list scan)
+- Unauthorized kprobe hooks (periodic debugfs scan)
+- Signal 62 (your C2 channel)
+- memfd_create (fileless execution)
+- commit_creds escalation to root
+- finit_module (module loading)
+- register_ftrace_function (ftrace hooking)
+- kthread_use_mm (process memory takeover for injection)
+
+You probably want to disable SNITCH while you're getting your rootkit features working, then turn it back on when you're ready to test evasion. Open `service/setup_capstone.sh` and flip the toggle near the top:
 
 ```bash
-# Connect to the target network
-make wg-up
-
-# Deliver beachhead shellcode
-python3 tools/send_shellcode.py shellcode/beachhead.bin 10.10.10.1 1337
-
-# Run the full chain test against the live target
-TARGET=10.10.10.1 bash test/test_chain.sh
-
-# Disconnect
-make wg-down
+ENABLE_SNITCH=false    # disable while building features
+ENABLE_SNITCH=true     # re-enable for evasion testing (Step 4)
 ```
 
-See `wireguard/README.md` for VPN setup details.
+## Kernel symbol resolution
 
----
-
-## Repository Layout
-
-```
-capstone-student/
-├── capstone.md          # Full assignment specification
-├── COLDSPARK.md         # Threat intel targeting package
-├── Makefile             # Top-level build orchestration
-├── config.mk            # Cross-compile settings
-│
-├── lkm/src/             # Kernel rootkit module (YOU WRITE THIS)
-│   ├── rootkit.c        #   ftrace blocking, module self-hiding
-│   ├── file_hide.c      #   File hiding via getdents64 kretprobe
-│   ├── proc_hide.c      #   Process hiding via /proc filtering
-│   ├── c2.c             #   Covert C2 via kill() kprobe
-│   └── inject.c         #   Userland shellcode injection
-│
-├── exploit/             # Privilege escalation exploits (YOU WRITE THESE)
-├── shellcode/           # AArch64 beachhead shellcode (YOU WRITE THIS)
-├── loader/              # Reflective ELF loader (OPTIONAL EXTRA CREDIT)
-│
-├── tools/               # Provided C2 helpers (mykill, rkcmd, send_shellcode.py)
-├── drivers/             # Provided vulnerable kernel drivers (vuln_rwx, vuln_rw)
-├── service/             # MERIDIAN TCP service + SNITCH IDS
-├── test/                # Automated test harnesses
-├── target/              # QEMU VM boot scripts and assets
-├── wireguard/           # WireGuard VPN configs (50 groups)
-├── kernel/              # Kernel headers (linux-6.6)
-├── shared/              # QEMU 9P mount point (auto-populated by make deploy)
-└── deploy/              # Ansible playbooks for live target
-```
-
----
-
-## What You Implement
-
-| Component | Location | Points |
-|-----------|----------|--------|
-| File hiding (kretprobe) | `lkm/src/file_hide.c` | 25 |
-| Access blocking (ftrace) | `lkm/src/rootkit.c` | 20 |
-| Module self-hiding | `lkm/src/rootkit.c` | 10 |
-| Covert C2 channel (kprobe) | `lkm/src/c2.c` | 25 |
-| Process hiding (kretprobe) | `lkm/src/proc_hide.c` | 20 |
-| RWX driver exploitation | `exploit/exploit_rwx.c` | 20 |
-| R/W privilege escalation | `exploit/exploit_rw.c` | 25 |
-| modprobe_path hijack | `exploit/exploit_modprobe.c` | 30 |
-| **Subtotal** | | **175** |
-| Beachhead shellcode | `shellcode/beachhead.S` | 25 |
-| **Total** | | **200** |
-
-### Extra Credit
-
-| Component | Location | Points |
-|-----------|----------|--------|
-| Direct kernel module loading | `exploit/` | +40 |
-| Reflective module loading | `loader/` | +50 |
-| SNITCH IDS evasion | `lkm/src/` | +15 |
-
----
-
-## Submission
+The target boots with `nokaslr`, so kernel addresses are the same every boot. `/proc/kallsyms` is locked down to root, but you don't need it. Just grep `System.map` from your kernel build:
 
 ```bash
-make submission.zip
+grep prepare_kernel_cred kernel/linux-6.6/System.map
+grep commit_creds kernel/linux-6.6/System.map
+grep init_task kernel/linux-6.6/System.map
 ```
 
-Upload `submission.zip` to Gradescope.
+Hardcode these addresses in your exploit. No randomization, no guessing.
 
----
+## Test scripts
 
-## Useful Make Targets
+Run these inside the VM after `make deploy`:
 
-| Target | Description |
-|--------|-------------|
-| `make load` | `insmod rootkit.ko` (run inside VM) |
-| `make unload` | `rmmod rootkit` (run inside VM) |
-| `make reload` | Unload + reload the module |
-| `make log` | `dmesg \| tail -40` |
-| `make status` | Check if rootkit is loaded and C2 is active |
-| `make overlay` | Create a fresh QCOW2 overlay |
-| `make clean-overlay` | Delete all overlay images |
+```bash
+sudo bash test/test_lkm.sh        # rootkit features (B1-B5)
+sudo bash test/test_challenges.sh  # exploit challenges (7-9)
+```
+
+## Repo layout
+
+```
+COLDSPARK.md          Targeting package (your mission briefing)
+capstone.md           Technical specification
+config.mk             Cross-compile settings (shared by all Makefiles)
+Makefile              Top-level build — delegates to each subdirectory
+
+shellcode/            YOUR beachhead shellcode (PIC, AArch64 assembly)
+  beachhead.S         Stage 1 payload sent to MERIDIAN
+  Makefile            Assembles .S -> .bin via as + objcopy
+
+lkm/                  YOUR kernel rootkit module
+  src/rootkit.c       Main module, ftrace hook, module hiding
+  src/file_hide.c     File hiding (getdents64 kretprobe)
+  src/c2.c            Covert C2 (kill signal hook)
+  src/inject.c        Shellcode injection
+  Makefile            Builds rootkit.ko via kbuild
+
+exploit/              YOUR privilege escalation exploits
+  exploit_rwx.c       Challenge 7 — /dev/vuln_rwx
+  exploit_privesc.c   Challenge 8 — /dev/vuln_rw
+  exploit_modprobe.c  Challenge 9 — modprobe_path
+  Makefile            Builds all exploit binaries
+
+drivers/              Vulnerable kernel drivers (provided, source included)
+service/              MERIDIAN service + SNITCH IDS binaries
+  snitch/             Pre-built SNITCH (no source)
+tools/                C2 helpers (rkcmd, send_shellcode.py)
+test/                 Test suites
+target-package/       Target VM (Image + QCOW2)
+kernel/               Kernel config for building headers
+docs/                 Written analysis template
+```
+
+## Submit
+
+Submit the three PIR flag strings to Gradescope. See `COLDSPARK.md` for what you're looking for.

@@ -216,16 +216,18 @@ run_deploy_tests() {
 
     pass "rootkit.ko found ($(wc -c < "$ROOTKIT") bytes)"
 
-    # Test insmod
-    rmmod rootkit 2>/dev/null || true
-    dmesg -C
-
-    if insmod "$ROOTKIT" 2>/dev/null; then
-        pass "insmod rootkit.ko"
+    # Check if already loaded (test_lkm.sh may have loaded it)
+    if lsmod | grep -q rootkit || [ -d /sys/module/rootkit ]; then
+        pass "rootkit already loaded"
     else
-        fail "insmod rootkit.ko failed"
-        dmesg | tail -3 | sed 's/^/    /'
-        return
+        dmesg -C
+        if insmod "$ROOTKIT" 2>/dev/null; then
+            pass "insmod rootkit.ko"
+        else
+            fail "insmod rootkit.ko failed"
+            dmesg | tail -3 | sed 's/^/    /'
+            return
+        fi
     fi
     sleep 1
 

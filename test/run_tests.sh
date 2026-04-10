@@ -75,7 +75,7 @@ if [ -f test_lkm.sh ] && [ -f rootkit.ko ]; then
     echo "========================================"
     echo " LKM Rootkit Tests"
     echo "========================================"
-    bash test_lkm.sh || true
+    bash test_lkm.sh 2>&1 || true
     echo ""
 fi
 
